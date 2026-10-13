@@ -56,7 +56,7 @@ Step 'Railway : environnement dev (copie de production)'
 if (Test-Cmd $railway @('variable', 'list', '--service', 'api', '--environment', 'dev', '--kv')) {
   Write-Host 'Environnement dev déjà présent'
 } else {
-  Run $railway @('environment', 'new', 'dev', '--duplicate', 'production')
+  Run $railway @('environment', 'new', 'dev', '--duplicate', 'production', '--json')
 }
 Run $railway @('variable', 'set', "CORS_ORIGINS=$cors,http://localhost:3000", '--service', 'api', '--environment', 'dev', '--skip-deploys')
 Run $railway @('up', '--ci', '--service', 'api', '--environment', 'dev')

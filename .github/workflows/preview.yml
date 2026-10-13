@@ -39,7 +39,7 @@ jobs:
           if railway variable list -s api -e "$RAILWAY_ENV" -p "$RAILWAY_PROJECT_ID" --kv >/dev/null 2>&1; then
             echo "Environnement $RAILWAY_ENV déjà présent"
           else
-            railway environment new "$RAILWAY_ENV" --duplicate dev -p "$RAILWAY_PROJECT_ID"
+            railway environment new "$RAILWAY_ENV" --duplicate dev -p "$RAILWAY_PROJECT_ID" --json
           fi
 
       - name: Déployer l'API
