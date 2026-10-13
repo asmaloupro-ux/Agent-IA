@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,magenta \"npm run dev -w @agent-ia/api\" \"npm run dev -w @agent-ia/web\"",
     "dev:railway": "concurrently -n api,web -c blue,magenta \"railway run -s api -e dev npm run dev -w @agent-ia/api\" \"npm run dev -w @agent-ia/web\"",
+    "start": "npm run start -w @agent-ia/api",
     "build": "npm run build --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",

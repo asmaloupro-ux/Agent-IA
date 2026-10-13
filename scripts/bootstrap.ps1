@@ -18,36 +18,58 @@ function Run([string]$exe, [string[]]$argv) {
   & $exe @argv
   if ($LASTEXITCODE -ne 0) { throw "Échec : $exe $($argv -join ' ')" }
 }
+# Vrai si la commande réussit (sortie masquée) : sert à sauter ce qui existe déjà, le script est reprenable.
+# (PowerShell 5.1 transforme le stderr redirigé d'un exe en erreur bloquante avec 'Stop' : on repasse en 'Continue'.)
+function Test-Cmd([string]$exe, [string[]]$argv) {
+  $ErrorActionPreference = 'Continue'
+  & $exe @argv *> $null
+  return $LASTEXITCODE -eq 0
+}
+function Get-ApiDomain([string]$envName) {
+  $ErrorActionPreference = 'Continue'
+  $kv = & $railway variable list --service api --environment $envName --kv 2>$null
+  return ($kv | Select-String '^RAILWAY_PUBLIC_DOMAIN=(.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value })
+}
 
 # ---------- Railway ----------
-Step 'Railway : création du projet Agent-IA'
-Run $railway @('init', '--name', 'Agent-IA')
+Step 'Railway : projet Agent-IA'
+if (Test-Cmd $railway @('status')) { Write-Host 'Déjà lié à un projet Railway' }
+else { Run $railway @('init', '--name', 'Agent-IA') }
 $status = (& $railway status --json) | ConvertFrom-Json
 $projectId = $status.id
 if (-not $projectId) { throw "ID du projet Railway introuvable dans : $($status | ConvertTo-Json -Depth 3)" }
 Write-Host "Projet Railway : $projectId"
 
-Step 'Railway : base PostgreSQL'
-Run $railway @('add', '--database', 'postgres')
-
-Step 'Railway : service api (production)'
-Run $railway @('add', '--service', 'api',
-  '--variables', 'DATABASE_URL=${{Postgres.DATABASE_URL}}',
-  '--variables', "CORS_ORIGINS=$cors")
+Step 'Railway : PostgreSQL + service api (production)'
+if (Test-Cmd $railway @('variable', 'list', '--service', 'api', '--environment', 'production', '--kv')) {
+  Write-Host 'Service api déjà présent'
+} else {
+  Run $railway @('add', '--database', 'postgres')
+  Run $railway @('add', '--service', 'api',
+    '--variables', 'DATABASE_URL=${{Postgres.DATABASE_URL}}',
+    '--variables', "CORS_ORIGINS=$cors")
+}
 Run $railway @('up', '--ci', '--service', 'api', '--environment', 'production')
-Run $railway @('domain', '--service', 'api', '--environment', 'production')
+if (-not (Get-ApiDomain 'production')) { Run $railway @('domain', '--service', 'api', '--environment', 'production') }
 
 Step 'Railway : environnement dev (copie de production)'
-Run $railway @('environment', 'new', 'dev', '--duplicate', 'production')
+if (Test-Cmd $railway @('variable', 'list', '--service', 'api', '--environment', 'dev', '--kv')) {
+  Write-Host 'Environnement dev déjà présent'
+} else {
+  Run $railway @('environment', 'new', 'dev', '--duplicate', 'production')
+}
 Run $railway @('variable', 'set', "CORS_ORIGINS=$cors,http://localhost:3000", '--service', 'api', '--environment', 'dev', '--skip-deploys')
 Run $railway @('up', '--ci', '--service', 'api', '--environment', 'dev')
-Run $railway @('domain', '--service', 'api', '--environment', 'dev')
+if (-not (Get-ApiDomain 'dev')) { Run $railway @('domain', '--service', 'api', '--environment', 'dev') }
 Run $railway @('environment', 'link', 'dev')   # le dev local (`npm run dev:railway`) utilise l'env dev
 
 # ---------- Vercel ----------
 Step 'Vercel : projet agent-ia-web'
-Run $vercel @('project', 'create', 'agent-ia-web')
-Run $vercel @('link', '--yes', '--project', 'agent-ia-web', '--cwd', 'apps/web')
+if (Test-Path 'apps/web/.vercel/project.json') { Write-Host 'Projet Vercel déjà lié' }
+else {
+  if (-not (Test-Cmd $vercel @('project', 'inspect', 'agent-ia-web'))) { Run $vercel @('project', 'create', 'agent-ia-web') }
+  Run $vercel @('link', '--yes', '--project', 'agent-ia-web', '--cwd', 'apps/web')
+}
 $link = Get-Content 'apps/web/.vercel/project.json' -Raw | ConvertFrom-Json
 Write-Host "Vercel org : $($link.orgId) / projet : $($link.projectId)"
 
