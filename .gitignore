@@ -21,3 +21,12 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# Monorepo
+.env.local
+apps/*/.env
+.vercel
+.railway
+*.tsbuildinfo
+.next/
+next-env.d.ts

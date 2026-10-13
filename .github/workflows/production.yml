@@ -1,0 +1,87 @@
+# Merge sur main => déploiement production Railway (API) puis Vercel (front), puis vérification.
+name: Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+  RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+
+jobs:
+  railway:
+    name: Railway - API production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      api_url: ${{ steps.domain.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @railway/cli@5.67.0
+      - name: Déployer l'API
+        run: railway up --ci -s api -e production -p "$RAILWAY_PROJECT_ID"
+      - name: Domaine public
+        id: domain
+        run: |
+          domain=$(railway variable list -s api -e production -p "$RAILWAY_PROJECT_ID" --kv | sed -n 's/^RAILWAY_PUBLIC_DOMAIN=//p')
+          [ -n "$domain" ] || { echo "::error::Domaine Railway production introuvable"; exit 1; }
+          echo "api_url=https://$domain" >> "$GITHUB_OUTPUT"
+      - name: Healthcheck
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.domain.outputs.api_url }}/health" || true)
+            [ "$code" = "200" ] && exit 0
+            echo "Tentative $i : HTTP $code"; sleep 10
+          done
+          exit 1
+
+  vercel:
+    name: Vercel - front production
+    needs: railway
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      web_url: ${{ steps.deploy.outputs.web_url }}
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Déployer en production
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          url=$(npx -y vercel@63.1.2 deploy --prod --cwd apps/web --yes --token "$VERCEL_TOKEN" \
+            --build-env NEXT_PUBLIC_API_URL="${{ needs.railway.outputs.api_url }}")
+          echo "web_url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Production déployée : $url" >> "$GITHUB_STEP_SUMMARY"
+
+  user-tests:
+    name: Tests utilisateur production
+    needs: [railway, vercel]
+    uses: ./.github/workflows/deploy-check.yml
+    with:
+      url: ${{ needs.vercel.outputs.web_url }}
+      api_url: ${{ needs.railway.outputs.api_url }}
+      environment: production
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets: inherit

@@ -1,35 +1,51 @@
-# Après chaque déploiement réussi (Vercel, Netlify, Render... qui publient un
-# "deployment_status" GitHub) : smoke test de l'URL puis tests utilisateur par Claude.
+# Vérification d'un déploiement : smoke test puis tests utilisateur Playwright par Claude.
+# Appelé par preview.yml et production.yml, ou lancé à la main (Actions > Run workflow).
 name: Vérification du déploiement
 
 on:
-  deployment_status:
+  workflow_call:
+    inputs:
+      url: { type: string, required: true }
+      api_url: { type: string, required: false, default: "" }
+      pr_number: { type: string, required: false, default: "" }
+      environment: { type: string, required: false, default: "" }
+  workflow_dispatch:
+    inputs:
+      url: { description: "URL du front à tester", required: true }
+      api_url: { description: "URL de l'API (optionnel)", required: false, default: "" }
+      pr_number: { description: "Numéro de PR à commenter (optionnel)", required: false, default: "" }
+      environment: { description: "Nom de l'environnement", required: false, default: "" }
 
 jobs:
   smoke-test:
     name: Smoke test
-    if: github.event.deployment_status.state == 'success'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: {}
     outputs:
-      status: ${{ steps.check.outputs.status }}
+      web_status: ${{ steps.check.outputs.web_status }}
+      api_status: ${{ steps.check.outputs.api_status }}
     steps:
-      - name: L'URL répond-elle ?
+      - name: Le front et l'API répondent-ils ?
         id: check
         env:
-          URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+          URL: ${{ inputs.url }}
+          API_URL: ${{ inputs.api_url }}
+          BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
-          echo "URL déployée : $URL"
-          code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo 000)
-          echo "Code HTTP : $code"
-          echo "status=$code" >> "$GITHUB_OUTPUT"
-          if [ "$code" -ge 400 ] || [ "$code" = "000" ]; then exit 1; fi
+          web=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 -H "x-vercel-protection-bypass: $BYPASS" "$URL" || echo 000)
+          echo "Front $URL : HTTP $web"; echo "web_status=$web" >> "$GITHUB_OUTPUT"
+          api=n/a
+          if [ -n "$API_URL" ]; then
+            api=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 "$API_URL/health" || echo 000)
+            echo "API $API_URL/health : HTTP $api"
+          fi
+          echo "api_status=$api" >> "$GITHUB_OUTPUT"
+          if [ "$web" -ge 400 ] || [ "$web" = "000" ]; then exit 1; fi
 
   claude-user-test:
     name: Tests utilisateur Claude
     needs: smoke-test
-    if: always() && github.event.deployment_status.state == 'success'
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -39,11 +55,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.deployment.sha }}
           fetch-depth: 1
-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Installer Playwright
-        run: npx -y playwright@1.48.2 install --with-deps chromium
+        run: |
+          mkdir -p /tmp/e2e && cd /tmp/e2e && npm init -y >/dev/null
+          npm install playwright@1.48.2
+          npx playwright install --with-deps chromium
 
       - uses: anthropics/claude-code-action@v1
         with:
@@ -51,25 +71,32 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             REPO: ${{ github.repository }}
-            COMMIT: ${{ github.event.deployment.sha }}
-            ENVIRONNEMENT: ${{ github.event.deployment.environment }}
-            URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
-            SMOKE TEST (code HTTP) : ${{ needs.smoke-test.outputs.status }}
+            ENVIRONNEMENT: ${{ inputs.environment }}
+            URL FRONT: ${{ inputs.url }}
+            URL API: ${{ inputs.api_url }}
+            PR: ${{ inputs.pr_number }}
+            SMOKE TEST : front HTTP ${{ needs.smoke-test.outputs.web_status }}, API /health HTTP ${{ needs.smoke-test.outputs.api_status }}
+            EN-TÊTE VERCEL : si la variable d'environnement VERCEL_BYPASS n'est pas vide, ajoute l'en-tête
+            HTTP « x-vercel-protection-bypass: <valeur> » à toutes les requêtes (extraHTTPHeaders Playwright).
 
             Tu es l'agent debug-tester (voir .claude/agents/debug-tester.md). Réponds en français.
             Vérifie que ce déploiement fonctionne pour un vrai utilisateur :
-            1. Trouve la PR liée au commit : gh api repos/${{ github.repository }}/commits/${{ github.event.deployment.sha }}/pulls
-            2. Écris un script Playwright (Node, chromium headless) dans /tmp qui, sur l'URL :
+            1. Si une PR est fournie, lis-la (gh pr view / gh pr diff) pour savoir quelles pages tester en priorité.
+            2. Écris un script Playwright dans /tmp/e2e/test.mjs (import { chromium } from 'playwright'), qui :
                - charge la page d'accueil et les pages touchées par la PR
-               - capture les erreurs console et les requêtes en échec (4xx/5xx)
-               - teste les parcours principaux, en desktop puis en mobile (375px)
-               N'utilise que des données de test. Ne soumets aucun paiement réel.
-            3. Lance-le avec : npx -y playwright@1.48.2 ... ou node /tmp/test.mjs
-            4. Poste UN commentaire sur la PR (gh pr comment) :
-               ## Vérification du déploiement
+               - vérifie que l'état de l'API s'affiche (pas « API injoignable »)
+               - teste les parcours principaux, champs vides, caractères spéciaux, double-clic
+               - capture les erreurs console et les requêtes en échec (4xx/5xx, erreurs CORS)
+               - refait les tests en mobile (375x812)
+               N'utilise que des données de test.
+            3. Lance-le : cd /tmp/e2e && node test.mjs
+            4. Rapport au format :
+               ## 🧪 Tests utilisateur — <environnement>
                **URL :** ...  **Verdict :** ✅ OK / ❌ Problème
-               | Scénario | Résultat | Remarque |
-               + erreurs console / réseau trouvées.
-            S'il n'y a pas de PR liée, affiche simplement le rapport.
+               | Scénario | Desktop | Mobile | Remarque |
+               + erreurs console / réseau, et cause probable de chaque échec.
+               Si une PR est fournie : poste-le avec gh pr comment <PR>. Sinon écris-le dans $GITHUB_STEP_SUMMARY.
           claude_args: |
-            --allowedTools "Bash(gh pr comment:*),Bash(gh api:*),Bash(gh pr view:*),Bash(curl:*),Bash(node:*),Bash(npx:*),Bash(npm:*),Write,Read,Glob,Grep"
+            --allowedTools "Bash(gh pr comment:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(curl:*),Bash(node:*),Bash(cd /tmp/e2e:*),Bash(cat:*),Bash(echo:*),Write,Read,Glob,Grep"
+        env:
+          VERCEL_BYPASS: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
