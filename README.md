@@ -40,9 +40,18 @@ apps/api   Express + TypeScript + Postgres → Railway (projet Agent-IA, service
 
 | Environnement | Railway (API + Postgres) | Vercel (front) | Déclencheur |
 |---|---|---|---|
-| `production` | env `production` | production | merge sur `main` |
-| `dev` | env `dev` | — (local) | `npm run dev:railway` |
+| `production` | env `production` — base **Supabase** « MVP Eco-locaux » | production | merge sur `main` |
+| `dev` | env `dev` — Postgres Railway | — (local) | `npm run dev:railway` |
 | preview PR | env `pr-<N>` (copie de `dev`, supprimé à la fermeture) | preview | chaque PR |
+
+## Base de données
+
+- **Production** : Supabase (projet « MVP Eco-locaux », eu-north-1), via le pooler en mode session
+  `aws-0-eu-north-1.pooler.supabase.com:5432`. SSL vérifié (`verify-full`) avec le certificat public
+  [`apps/api/certs/supabase-prod-ca-2021.crt`](apps/api/certs/supabase-prod-ca-2021.crt), activé automatiquement
+  pour tout hôte `*.supabase.com` / `*.supabase.co`.
+- **dev et previews** : Postgres Railway jetable — les tests ne touchent jamais les données réelles.
+- L'API se connecte avec le rôle `postgres`, qui contourne le RLS : chaque route doit contrôler elle-même les accès.
 
 ## Développement local
 
