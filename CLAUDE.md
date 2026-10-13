@@ -15,11 +15,23 @@ Répondre en français.
   4. donner le lien de la PR à l'utilisateur.
 - Ne jamais merger une PR ni activer l'auto-merge sans que l'utilisateur le demande.
 
+Le hook `.claude/hooks/auto-pr.mjs` (Stop) bloque la fin de réponse tant que ce n'est pas fait.
+
+## Projet
+- Monorepo npm workspaces : `apps/web` (Next.js → Vercel), `apps/api` (Express + Postgres → Railway).
+- Commandes : `npm run dev`, `npm run dev:railway`, `npm test`, `npm run lint`, `npm run build` (à la racine).
+- Variables : le front lit `NEXT_PUBLIC_API_URL` ; l'API lit `DATABASE_URL`, `CORS_ORIGINS`, `PORT`.
+  Ne jamais committer de `.env` ni de secret.
+- Une nouvelle variable d'environnement doit être ajoutée à `.env.example`, et côté Railway à l'env `dev`
+  (les env `pr-N` en sont des copies) et `production`.
+
 ## Vérifications automatiques sur chaque PR (GitHub Actions)
-- `.github/workflows/pr-quality.yml` : CI (lint, tests, build) puis revue de code par Claude.
-- `.github/workflows/deploy-check.yml` : après chaque déploiement de preview réussi,
-  smoke test de l'URL puis tests utilisateur Playwright par Claude.
-- Si la CI ou la revue signale un problème, le corriger sur la même branche et repousser.
+- `pr-quality.yml` : CI (lint, tests, build) puis revue de code par Claude.
+- `preview.yml` : env Railway `pr-N` + preview Vercel branchée dessus, puis `deploy-check.yml`
+  (tests utilisateur Playwright par Claude). Env Railway supprimé à la fermeture de la PR.
+- `production.yml` : déploiement production au merge sur `main`.
+- Si la CI, la revue ou les tests utilisateur signalent un problème, le corriger sur la même branche et repousser.
+- Après avoir ouvert une PR, suivre les checks (`gh pr checks`) et corriger les échecs.
 
 ## Débogage et tests utilisateurs
 Pour tout bug, erreur ou test utilisateur, utiliser l'agent `debug-tester`

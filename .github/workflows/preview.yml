@@ -1,0 +1,140 @@
+# Preview complète pour chaque PR :
+#   Railway : environnement pr-<N> (copie de « dev » : API + PostgreSQL dédiés)
+#   Vercel  : front déployé avec NEXT_PUBLIC_API_URL pointant sur l'API de la PR
+#   Claude  : tests utilisateur sur la preview (deploy-check.yml)
+# À la fermeture de la PR, l'environnement Railway est supprimé.
+name: Preview (Railway + Vercel)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+env:
+  RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+  RAILWAY_PROJECT_ID: ${{ vars.RAILWAY_PROJECT_ID }}
+  RAILWAY_ENV: pr-${{ github.event.pull_request.number }}
+
+jobs:
+  railway:
+    name: Railway - API de preview
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      api_url: ${{ steps.domain.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @railway/cli@5.67.0
+
+      - name: Créer l'environnement pr-N (copie de dev) s'il n'existe pas
+        run: |
+          if railway variable list -s api -e "$RAILWAY_ENV" -p "$RAILWAY_PROJECT_ID" --kv >/dev/null 2>&1; then
+            echo "Environnement $RAILWAY_ENV déjà présent"
+          else
+            railway environment new "$RAILWAY_ENV" --duplicate dev -p "$RAILWAY_PROJECT_ID" --json
+          fi
+
+      - name: Déployer l'API
+        run: railway up --ci -s api -e "$RAILWAY_ENV" -p "$RAILWAY_PROJECT_ID"
+
+      - name: Récupérer (ou créer) le domaine public
+        id: domain
+        run: |
+          get_domain() {
+            railway variable list -s api -e "$RAILWAY_ENV" -p "$RAILWAY_PROJECT_ID" --kv \
+              | sed -n 's/^RAILWAY_PUBLIC_DOMAIN=//p'
+          }
+          domain=$(get_domain)
+          if [ -z "$domain" ]; then
+            railway domain -s api -e "$RAILWAY_ENV" -p "$RAILWAY_PROJECT_ID" >/dev/null
+            domain=$(get_domain)
+          fi
+          [ -n "$domain" ] || { echo "::error::Domaine Railway introuvable"; exit 1; }
+          echo "api_url=https://$domain" >> "$GITHUB_OUTPUT"
+
+      - name: Healthcheck de l'API
+        env:
+          API_URL: ${{ steps.domain.outputs.api_url }}
+        run: |
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$API_URL/health" || true)
+            [ "$code" = "200" ] && { echo "API OK"; exit 0; }
+            echo "Tentative $i : HTTP $code"; sleep 10
+          done
+          echo "::error::L'API ne répond pas sur $API_URL/health"; exit 1
+
+  vercel:
+    name: Vercel - front de preview
+    needs: railway
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      web_url: ${{ steps.deploy.outputs.web_url }}
+    env:
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Déployer sur Vercel
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          API_URL: ${{ needs.railway.outputs.api_url }}
+        run: |
+          url=$(npx -y vercel@63.1.2 deploy --non-interactive --cwd apps/web --yes --token "$VERCEL_TOKEN" \
+            --build-env NEXT_PUBLIC_API_URL="$API_URL" \
+            --meta githubPr="${{ github.event.pull_request.number }}")
+          echo "web_url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Commenter la PR avec les URL
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --edit-last --create-if-none --body "## 🚀 Preview déployée
+          | Service | URL |
+          |---|---|
+          | Front (Vercel) | ${{ steps.deploy.outputs.web_url }} |
+          | API (Railway, env \`${{ env.RAILWAY_ENV }}\`) | ${{ needs.railway.outputs.api_url }} |
+
+          Commit : \`${{ github.event.pull_request.head.sha }}\` — les tests utilisateur Claude suivent."
+
+  user-tests:
+    name: Tests utilisateur
+    needs: [railway, vercel]
+    uses: ./.github/workflows/deploy-check.yml
+    with:
+      url: ${{ needs.vercel.outputs.web_url }}
+      api_url: ${{ needs.railway.outputs.api_url }}
+      pr_number: ${{ github.event.pull_request.number }}
+      environment: pr-${{ github.event.pull_request.number }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    secrets: inherit
+
+  cleanup:
+    name: Supprimer l'environnement Railway
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @railway/cli@5.67.0
+      - run: railway environment delete "$RAILWAY_ENV" -y -p "$RAILWAY_PROJECT_ID" || echo "Déjà supprimé"
