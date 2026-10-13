@@ -20,6 +20,9 @@ Le hook `.claude/hooks/auto-pr.mjs` (Stop) bloque la fin de réponse tant que ce
 ## Projet
 - Monorepo npm workspaces : `apps/web` (Next.js → Vercel), `apps/api` (Express + Postgres → Railway).
 - Commandes : `npm run dev`, `npm run dev:railway`, `npm test`, `npm run lint`, `npm run build` (à la racine).
+- Base : production = Supabase « MVP Eco-locaux » (vraies données ; pooler session eu-north-1, SSL vérifié auto) ;
+  dev et previews = Postgres Railway. Ne jamais pointer dev, une preview ou un test vers Supabase.
+  Le rôle postgres contourne le RLS : contrôler les accès dans chaque route.
 - Variables : le front lit `NEXT_PUBLIC_API_URL` ; l'API lit `DATABASE_URL`, `CORS_ORIGINS`, `PORT`.
   Ne jamais committer de `.env` ni de secret.
 - Une nouvelle variable d'environnement doit être ajoutée à `.env.example`, et côté Railway à l'env `dev`
