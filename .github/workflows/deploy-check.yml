@@ -1,0 +1,75 @@
+# Après chaque déploiement réussi (Vercel, Netlify, Render... qui publient un
+# "deployment_status" GitHub) : smoke test de l'URL puis tests utilisateur par Claude.
+name: Vérification du déploiement
+
+on:
+  deployment_status:
+
+jobs:
+  smoke-test:
+    name: Smoke test
+    if: github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.check.outputs.status }}
+    steps:
+      - name: L'URL répond-elle ?
+        id: check
+        env:
+          URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+        run: |
+          echo "URL déployée : $URL"
+          code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo 000)
+          echo "Code HTTP : $code"
+          echo "status=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" -ge 400 ] || [ "$code" = "000" ]; then exit 1; fi
+
+  claude-user-test:
+    name: Tests utilisateur Claude
+    needs: smoke-test
+    if: always() && github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          fetch-depth: 1
+
+      - name: Installer Playwright
+        run: npx -y playwright@1.48.2 install --with-deps chromium
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            COMMIT: ${{ github.event.deployment.sha }}
+            ENVIRONNEMENT: ${{ github.event.deployment.environment }}
+            URL: ${{ github.event.deployment_status.environment_url || github.event.deployment_status.target_url }}
+            SMOKE TEST (code HTTP) : ${{ needs.smoke-test.outputs.status }}
+
+            Tu es l'agent debug-tester (voir .claude/agents/debug-tester.md). Réponds en français.
+            Vérifie que ce déploiement fonctionne pour un vrai utilisateur :
+            1. Trouve la PR liée au commit : gh api repos/${{ github.repository }}/commits/${{ github.event.deployment.sha }}/pulls
+            2. Écris un script Playwright (Node, chromium headless) dans /tmp qui, sur l'URL :
+               - charge la page d'accueil et les pages touchées par la PR
+               - capture les erreurs console et les requêtes en échec (4xx/5xx)
+               - teste les parcours principaux, en desktop puis en mobile (375px)
+               N'utilise que des données de test. Ne soumets aucun paiement réel.
+            3. Lance-le avec : npx -y playwright@1.48.2 ... ou node /tmp/test.mjs
+            4. Poste UN commentaire sur la PR (gh pr comment) :
+               ## Vérification du déploiement
+               **URL :** ...  **Verdict :** ✅ OK / ❌ Problème
+               | Scénario | Résultat | Remarque |
+               + erreurs console / réseau trouvées.
+            S'il n'y a pas de PR liée, affiche simplement le rapport.
+          claude_args: |
+            --allowedTools "Bash(gh pr comment:*),Bash(gh api:*),Bash(gh pr view:*),Bash(curl:*),Bash(node:*),Bash(npx:*),Bash(npm:*),Write,Read,Glob,Grep"
