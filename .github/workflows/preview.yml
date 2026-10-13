@@ -95,7 +95,7 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           API_URL: ${{ needs.railway.outputs.api_url }}
         run: |
-          url=$(npx -y vercel@63.1.2 deploy --cwd apps/web --yes --token "$VERCEL_TOKEN" \
+          url=$(npx -y vercel@63.1.2 deploy --non-interactive --cwd apps/web --yes --token "$VERCEL_TOKEN" \
             --build-env NEXT_PUBLIC_API_URL="$API_URL" \
             --meta githubPr="${{ github.event.pull_request.number }}")
           echo "web_url=$url" >> "$GITHUB_OUTPUT"

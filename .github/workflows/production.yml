@@ -66,7 +66,7 @@ jobs:
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
-          url=$(npx -y vercel@63.1.2 deploy --prod --cwd apps/web --yes --token "$VERCEL_TOKEN" \
+          url=$(npx -y vercel@63.1.2 deploy --non-interactive --prod --cwd apps/web --yes --token "$VERCEL_TOKEN" \
             --build-env NEXT_PUBLIC_API_URL="${{ needs.railway.outputs.api_url }}")
           echo "web_url=$url" >> "$GITHUB_OUTPUT"
           echo "### Production déployée : $url" >> "$GITHUB_STEP_SUMMARY"
